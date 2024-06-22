@@ -351,16 +351,16 @@ class Backbone(nn.Module):
         self.num_rbf = num_rbf
         self.atom_drop = nn.Dropout(p=atom_drop_rate)
 
-        self.embed = nn.Embedding(_NUM_ATOM_TYPES, embedding_size)
+        self.embed_atoms = nn.Embedding(_NUM_ATOM_TYPES, embedding_size)
 
         if self.use_physical_properties:
             w_indim = embedding_size + 2
         else:
             w_indim = embedding_size
 
-        self.pp_layer = nn.Linear(2, embedding_size)
-        self.sasa_cat_embed = nn.Embedding(3, embedding_size)
-        self.charge_cat_embed = nn.Embedding(2, embedding_size)
+        self.pp_linear = nn.Linear(2, embedding_size)
+        self.sasa_cat_embed = nn.Embedding(2, embedding_size)
+        self.charge_cat_embed = nn.Embedding(3, embedding_size)
 
         self.W_v = nn.Sequential(
             norm_layer(w_indim), nn.Linear(w_indim, _DEFAULT_V_DIM[0])

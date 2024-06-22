@@ -47,7 +47,7 @@ class SiameseGraphormer(nn.Module):
         init_values = None
         num_heads = 8
 
-        self.proj0 = nn.Sequential(
+        self.regression_attn = nn.Sequential(
             AttentionBlock(dim=proj0_dim, num_heads=num_heads, init_values=init_values),
             AttentionBlock(dim=proj0_dim, num_heads=num_heads, init_values=init_values),
         )
@@ -103,10 +103,10 @@ class SiameseGraphormer(nn.Module):
         from_feats = torch.cat([from_aa, from_feats[:, 1:, :]], dim=1)
         to_feats = torch.cat([to_aa, from_feats[:, 1:, :]], dim=1)
 
-        from_feats = self.proj1(self.proj0(from_feats).permute(0, 2, 1)).permute(
+        from_feats = self.proj1(self.regression_attn(from_feats).permute(0, 2, 1)).permute(
             0, 2, 1
         )
-        to_feats = self.proj1(self.proj0(to_feats).permute(0, 2, 1)).permute(0, 2, 1)
+        to_feats = self.proj1(self.regression_attn(to_feats).permute(0, 2, 1)).permute(0, 2, 1)
 
         feat_delta = (to_feats - from_feats)[:, :1, :].mean(dim=1)
 
