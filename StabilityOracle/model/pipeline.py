@@ -93,11 +93,12 @@ class StabilityOraclePipeline:
             new_ckpt[key[len("module.") :]] = ckpt[key]
 
         model.load_state_dict(new_ckpt)
-        if self.args.debug != "one_gpu":
-            logging.debug("Parallelizing inference across GPUs")
-            model = nn.DataParallel(model)
-        else:
-            logging.debug("Force use one GPU")
+        if self.device != torch.device("cpu"):
+            if self.args.debug != "one_gpu":
+                logging.info("Parallelizing inference across GPUs")
+                model = nn.DataParallel(model)
+            else:
+                logging.info("Force use one GPU")
 
         model.to(self.device)
         self.model = model
