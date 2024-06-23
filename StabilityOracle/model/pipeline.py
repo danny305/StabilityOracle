@@ -72,9 +72,21 @@ class StabilityOraclePipeline:
         self.num_layers = num_layers
         self.drop_rate = drop_rate
 
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+
+        if self.args.cpu is True:
+            self.device = torch.device("cpu")
+
+        logging.info(f"Using device: {self.device}")
+
         model = SiameseGraphormer(self.args)
         with open(self.args.model_ckpt, "rb") as f:
-            ckpt = torch.load(f)
+            ckpt = torch.load(f, map_location=self.device)
         new_ckpt = {}
 
         for key in ckpt.keys():
@@ -82,11 +94,12 @@ class StabilityOraclePipeline:
 
         model.load_state_dict(new_ckpt)
         if self.args.debug != "one_gpu":
+            logging.debug("Parallelizing inference across GPUs")
             model = nn.DataParallel(model)
         else:
             logging.debug("Force use one GPU")
 
-        model.cuda()
+        model.to(self.device)
         self.model = model
         self.model_ema = ModelEma(model, 0.99)
         self.inference_model = self.model_ema.ema
@@ -124,12 +137,13 @@ class StabilityOraclePipeline:
 
         mut_infos, chain_ids = zip(*[info.split("_", 1) for info in mut_infos])
 
-        feats = torch.from_numpy(np.array(feats)).float().cuda()
-        coords = torch.from_numpy(np.array(coords)).float().cuda()
-        mask = torch.from_numpy(np.array(mask)).cuda()
-        cas = torch.from_numpy(np.array(cas)).float().cuda()
-        from_aas = torch.from_numpy(np.array(from_aas)).long().cuda()
-        to_aas = torch.from_numpy(np.array(to_aas)).long().cuda()
+        feats = torch.from_numpy(np.array(feats)).float().to(self.device)
+
+        coords = torch.from_numpy(np.array(coords)).float().to(self.device)
+        mask = torch.from_numpy(np.array(mask)).float().to(self.device)
+        cas = torch.from_numpy(np.array(cas)).float().to(self.device)
+        from_aas = torch.from_numpy(np.array(from_aas)).long().to(self.device)
+        to_aas = torch.from_numpy(np.array(to_aas)).long().to(self.device)
 
         input_aa = torch.concat(
             (from_aas.reshape(-1, 1), to_aas.reshape(-1, 1)), dim=-1

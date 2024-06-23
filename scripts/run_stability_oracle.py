@@ -73,6 +73,8 @@ def cli():
     parser.add_argument("--enable-wandb", action="store_true")
     parser.add_argument("--wandb-group", default="stability-oracle", type=str)
 
+    parser.add_argument("--cpu", action="store_true", help="Run inference on CPU; else it checks for GPU or MPS devices.")
+
     args = parser.parse_args()
 
     args.outdir.mkdir(0o770, parents=True, exist_ok=True)
