@@ -247,7 +247,7 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        x,
+        x=None,
         attn_mask=None,
         attn_bias=None,
         edge_type=None,
@@ -421,7 +421,30 @@ class Backbone(nn.Module):
         if "node3d" in self.args.debug:
             self.coord_emb = nn.Linear(3, embedding_size)
 
-    def forward(self, feats, coords, ca, mask, return_idx=[3]):
+    def forward(self, feats, atom_types, pp, coords, ca, mask, return_idx=[3]):
+        
+        if feats[0] == None: 
+            feats = self.embed_atoms(atom_types)
+
+            charge = pp[..., 0]
+            charge_cat = torch.zeros_like(charge, dtype=torch.long)  # convert to categorical
+            charge_cat = torch.where(charge > 0.5, 1, charge_cat)
+            charge_cat = torch.where(charge < -0.5, -1, charge_cat)
+            charge_delta = charge - charge_cat
+            charge_delta = ((charge_delta - 0.0915) / 0.1319).clamp(-3, 3)
+            charge_cat[charge_cat == -1] = 2  # categorial input need to be [0, 1, 2] not [-1, 0, 1]
+
+            # Charge is mostly 0, rest is one-sided gaussian
+            sasa = pp[..., 1]
+            sasa_neutral = (sasa == 0).long()
+            sasa_norm = (sasa / 10).clamp(-3, 3)
+
+            feats = feats + self.charge_cat_embed(charge_cat) + self.sasa_cat_embed(sasa_neutral) +\
+                self.pp_linear(torch.stack([charge_delta, sasa_norm], dim=-1))
+            
+            feats = torch.cat((feats, pp), dim=-1)
+            feats = self.W_v(feats)
+        
         batchsize = feats.shape[0]
         self._max_length = feats.shape[1]
         self.max_length = int(self._max_length + self.mb)

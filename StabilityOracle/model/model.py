@@ -68,13 +68,15 @@ class SiameseGraphormer(nn.Module):
 
         self.add_aa = nn.Parameter(torch.randn([1, self.aa_dim]) * 0.01)
 
-    def forward(self, feats, coords, ca, mask, aa_feats):
+    def forward(self, feats, atom_types, pp, coords, ca, mask, aa_feats):
 
         aa_embeds = self.backbone.dense[-1].weight
         aa_embeds = torch.cat([aa_embeds, self.add_aa], dim=0)
 
         local_env_feats, out = self.backbone(
             feats=feats,
+            atom_types=atom_types, 
+            pp=pp,
             coords=coords,
             ca=ca,
             mask=mask,
@@ -87,7 +89,7 @@ class SiameseGraphormer(nn.Module):
 
         hidden = from_feats.shape[-1]
         aa_embeds = self.proj_clstoken(aa_embeds)
-
+    
         from_aa = aa_embeds[aa_feats[:, 0].long()].reshape(-1, 1, hidden)
         to_aa = aa_embeds[aa_feats[:, 1].long()].reshape(-1, 1, hidden)
 
