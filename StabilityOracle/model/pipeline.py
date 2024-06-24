@@ -22,41 +22,16 @@ from sklearn.metrics import roc_auc_score
 from torch.autograd import Variable
 
 from StabilityOracle.model import SiameseGraphormer
+from StabilityOracle.model.dataloader import load_raw_graph, load_embedded_graph
+from StabilityOracle.model.post_process import format_dms_predictions
 
-
-_amino_acids = {
-    "ALA": 0,
-    "ARG": 1,
-    "ASN": 2,
-    "ASP": 3,
-    "CYS": 4,
-    "GLU": 5,
-    "GLN": 6,
-    "GLY": 7,
-    "HIS": 8,
-    "ILE": 9,
-    "LEU": 10,
-    "LYS": 11,
-    "MET": 12,
-    "PHE": 13,
-    "PRO": 14,
-    "SER": 15,
-    "THR": 16,
-    "TRP": 17,
-    "TYR": 18,
-    "VAL": 19,
-}
-
-_reverse_amino_acids = {}
-for key in _amino_acids.keys():
-    _reverse_amino_acids[_amino_acids[key]] = key
-
-
+        
 class StabilityOraclePipeline:
 
     def __init__(self, args):
         self.configured_dataset = False
         self.args = args
+        self.dms = False
 
     def configure_model(
         self,
@@ -107,48 +82,41 @@ class StabilityOraclePipeline:
 
         self.num_class = 1
 
-    def evaluate(self):
-
-        # build dataset
-        feats = []
-        coords = []
-        mask = []
-        cas = []
-        label = []
-        from_aas = []
-        to_aas = []
-        mut_infos = []
-        pdb_codes = []
-
-        with open(self.args.dataset, "rb") as f:
+    def _run_prediction(self, dataset: Path) -> dict:
+        with dataset.open("rb") as f:
             data = list(f)
+        
+        if 'mut_info' in json.loads(data[0]).keys(): 
+            env_info = load_embedded_graph(data)
+            
+            label = env_info['label']
+            pdb_codes = env_info['pdb_codes']
+            mut_infos, chain_ids = zip(*[info.split("_", 1) for info in env_info['mut_infos']])
+            feats = torch.from_numpy(np.array(env_info['feats'])).float().to(self.device)
+            coords = torch.from_numpy(np.array(env_info['coords'])).float().to(self.device)
+            mask = torch.from_numpy(np.array(env_info['mask'])).float().to(self.device)
+            cas = torch.from_numpy(np.array(env_info['cas'])).float().to(self.device)
+            from_aas = torch.from_numpy(np.array(env_info['from_aas'])).long().to(self.device)
+            to_aas = torch.from_numpy(np.array(env_info['to_aas'])).long().to(self.device)
+            input_aa = torch.concat(
+                    (from_aas.reshape(-1, 1), to_aas.reshape(-1, 1)), dim=-1 )
 
-        for data_idx in range(len(data)):
-            example = json.loads(data[data_idx])
-
-            mut_infos.append(example["mut_info"])
-            pdb_codes.append(example["pdb_id"])
-            feats.append(example["input"])
-            coords.append(example["coords"])
-            mask.append(example["mask"])
-            cas.append(example["ca"])
-            label.append(-example["ddg"])
-            from_aas.append(example["from"])
-            to_aas.append(example["to"])
-
-        mut_infos, chain_ids = zip(*[info.split("_", 1) for info in mut_infos])
-
-        feats = torch.from_numpy(np.array(feats)).float().to(self.device)
-
-        coords = torch.from_numpy(np.array(coords)).float().to(self.device)
-        mask = torch.from_numpy(np.array(mask)).float().to(self.device)
-        cas = torch.from_numpy(np.array(cas)).float().to(self.device)
-        from_aas = torch.from_numpy(np.array(from_aas)).long().to(self.device)
-        to_aas = torch.from_numpy(np.array(to_aas)).long().to(self.device)
-
-        input_aa = torch.concat(
-            (from_aas.reshape(-1, 1), to_aas.reshape(-1, 1)), dim=-1
-        )
+            pp = np.array( [None] * mask.shape[0] )
+            atom_types = np.array( [None] * mask.shape[0] )
+        else:
+            self.dms = True
+            env_info = load_raw_graph(data)
+            pdb_codes = env_info['pdb_codes']
+            mut_infos, chain_ids = zip(*[info.split("_", 1) for info in env_info['mut_infos']])
+            
+            atom_types = env_info['atom_types'].to(self.device)
+            coords = env_info['coords'].to(self.device)
+            mask = env_info['mask'].to(self.device)
+            cas = env_info['cas'].to(self.device)
+            pp = env_info['pp'].to(self.device)
+            input_aa = env_info['input_aa'].to(self.device)
+            label = env_info['label']
+            feats =  np.array( [None] * mask.shape[0] ) # no feats
 
         model_preds = []
 
@@ -160,6 +128,8 @@ class StabilityOraclePipeline:
                 if eidx > feats.shape[0]:
                     eidx = feats.shape[0]
                 pred, _ = self.model(
+                    atom_types = atom_types[bidx:eidx],
+                    pp = pp[bidx:eidx],
                     feats=feats[bidx:eidx],
                     ca=cas[bidx:eidx],
                     coords=coords[bidx:eidx],
@@ -167,13 +137,7 @@ class StabilityOraclePipeline:
                     aa_feats=input_aa[bidx:eidx],
                 )
                 model_preds += pred.cpu().detach().numpy().tolist()
-
-        logging.info(f"pearson corr: {round(pearsonr(model_preds, label)[0], 4)}")
-        logging.info(f"spearman corr: {round(spearmanr(model_preds, label)[0], 4)}")
-        logging.info(
-            f"AUROC: {round(roc_auc_score(np.array(label) > 0.0, 1 / (1 + np.exp(-np.array(model_preds)))),4)}"
-        )
-
+        
         df = pd.DataFrame(
             {
                 "pdb_code": pdb_codes,
@@ -183,8 +147,56 @@ class StabilityOraclePipeline:
                 "pred_ddG": np.round(-np.array(model_preds), 4),
             }
         )
-        df.to_csv(self.args.outfile, index=False)
-
-        logging.info(f"Predictions wrote to {self.args.outfile}")
 
         return df
+        
+
+    def evaluate(self):
+        df = self._run_prediction(self.args.dataset)
+
+        label = df['exp_ddG'].values
+        pred = df['pred_ddG'].values
+        if not np.isnan(label[0]):
+            logging.info(f"pearson corr: {round(pearsonr(pred, label)[0], 4)}")
+            logging.info(f"spearman corr: {round(spearmanr(pred, label)[0], 4)}")
+            logging.info(
+            f"AUROC: {round(roc_auc_score(np.array(label) > 0.0, 1 / (1 + np.exp(-np.array(pred)))),4)}"
+            )
+        else:
+            logging.info('No experimental ∆∆G labels provided to evaluate pearson, spearman, and AUROC')
+        
+        outfile_flat = self.args.outdir / f"{self.args.dataset.stem}_flat.csv"
+        df.to_csv(outfile_flat, index=False)
+        logging.info(f"Predictions wrote: {outfile_flat.resolve()}")
+
+        if self.dms:
+            outfile = self.args.outdir / f"{self.args.dataset.stem}.csv"
+            format_dms_predictions(df, outfile)
+
+
+
+    def inference(self, dataset: Path=None, outfile: Path= None) -> pd.DataFrame:
+
+        if isinstance(dataset, Path):
+            assert dataset.is_file(), f"Dataset file {dataset} not found"
+            assert dataset.suffix == ".jsonl", f"Dataset file {dataset.name} must be a .jsonl file"
+        else:
+            dataset = self.args.dataset
+
+        if not isinstance(outfile, Path):
+            outfile = self.args.outdir / f"{dataset.stem}.csv"
+            outfile_flat = self.args.outdir / f"{dataset.stem}_flat.csv"
+
+        assert outfile.suffix == ".csv", f"Output file {outfile} must be a .csv file"
+
+        df = self._run_prediction(dataset)
+        df.to_csv(outfile_flat, index=False)
+
+        logging.info(f"Predictions wrote to {outfile_flat}")
+        
+        if self.dms:
+            format_dms_predictions(df, outfile)
+            
+
+
+ 
